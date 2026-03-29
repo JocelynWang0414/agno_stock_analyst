@@ -4,7 +4,7 @@ __pycache__/
 *.pyo
 *.pyd
 .DS_Store
-investment_advisory.py.DS_Store
+investment_advisory.py
 memo_*.md
 trace_*.json
 trace_viewer.html
