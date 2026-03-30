@@ -1,158 +1,39 @@
-# CLAUDE.md — Investment Advisory Team
+## CLAUDE.md — Investment Advisory Team
 
-## Project Overview
-A multi-agent investment research system built with the [Agno](https://github.com/agno-agi/agno) framework.
-User provides a free-text investment theme; the system maps it to 1–3 sectors, screens 10 large-cap
-companies, runs parallel fundamental + technical analysis on all 10, picks the top 3, and produces a
-professional investment recommendation memo.
+## Project Structure
+* **`main.py`**: CLI entry point (`python main.py --topic "AI"`).
+* **`config.py`**: `llm()` factory — OpenRouter/Gemini 2.5 Flash Lite, `max_tokens=8000`. Call lazily inside functions (not at module level) so `.env` is loaded first.
+* **`data/sectors.py`**: `_SECTOR_TICKERS` — 12 S&P 500 tickers per sector. Hardcoded; do not replace with FMP API (returns 403).
+* **`tools/`**: `fundamental.py` (`get_free_cash_flow`), `technical.py` (`compute_technical_signals`), `macro.py` (`get_fred_data` — FRED REST API, retries on 5xx).
+* **`workflow/`**: `agents.py` (agent factories), `steps.py` (all executor functions), `pipeline.py` (`build_workflow`).
 
----
-
-## Architecture
-
+## Pipeline Order
 ```
-Topic Mapper      (LLM)       free-text theme → 1-3 FMP sector names
-Company Discovery (hardcoded) sectors → 10 large-cap tickers from _SECTOR_TICKERS
-Coordinator       (executor)  builds research brief for all 10
-    │
-    ├── [Parallel]
-    │     ├── Fundamental Analyst  — get_free_cash_flow + YFinanceTools
-    │     └── Technical Analyst    — compute_technical_signals + YFinanceTools
-    │
-Ranking           (executor)  regex score extraction → top 3 by composite score
-Portfolio Strategist (agent)  investment memo for top 3
+Topic Mapper → Company Discovery → Coordinator → Macro Analysis
+    → Parallel(Fundamental Analyst, Technical Analyst) → Ranking → Investment Memo
 ```
+Order matters: Macro Analysis must run before Parallel Analysis so analysts can reference the macro report.
 
-Pattern: **mapper → discovery → coordinator → specialists (parallel) → ranker → reviewer**
+## Agno API Rules
 
-Data flows exclusively through `get_step_content()` chaining.
-`additional_data` carries only the initial `{"topic": "..."}`.
+| Rule | Detail |
+| :--- | :--- |
+| **Workflow init** | `Workflow(steps=[...])` plain list. No `Steps()` wrapper. |
+| **Parallelism** | `Parallel(Step(...), Step(...), name="...")` — positional args only. |
+| **`agent=` input** | `Step(agent=...)` always sends `previous_step_outputs[-1]` as the user message. Use `executor=` whenever a step needs content from non-adjacent steps. |
+| **`executor=` preferred** | All analyst steps use `executor=`. Executor receives full `StepInput`; call `step_input.get_step_content("Step Name")` to read any prior step. |
+| **Data access** | `step_input.get_step_content("Step Name")` — works across nested steps recursively. |
+| **Runtime data** | Pass `additional_data` in `workflow.run()`, not in constructor. |
+| **Env vars** | `load_dotenv()` before all imports. No module-level `os.getenv` for LLM config. |
 
----
+## Model Constraints (gemini-2.5-flash-lite via OpenRouter)
+* **No tools on Macro Analyst** — model returns 0-char responses when given tools. Pre-fetch FRED data in the executor and pass as text.
+* **One ticker per analyst call** — model refuses multi-ticker tool-calling requests. Both analyst executors loop one ticker at a time and concatenate results.
+* **Guard `response.content`** — can be `None` even on a non-None response object. Always use `(response.content if response and response.content else None) or fallback`.
 
-## Key Files
+## FRED Data
+Series fetched: `FEDFUNDS` (12), `T10Y2Y` (12), `CPIAUCSL` (13), `GDPC1` (8). `get_fred_data` retries up to 3× with exponential backoff (2s, 4s) on 5xx errors; returns error string on 4xx without retrying.
 
-| File | Purpose |
-|------|---------|
-| `investment_advisory.py` | Single-file implementation of the entire workflow |
-| `.env` | API credentials (not committed) |
-| `requirements.txt` | Python dependencies |
-| `memo_<topic_slug>_<T1>_<T2>_<T3>.md` | Generated output memos |
-| `trace_<topic_slug>.json` | Full observability trace |
-
----
-
-## How to Run
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Set credentials in .env
-OPENROUTER_API_KEY=sk-or-v1-...
-OPENROUTER_MODEL=google/gemini-2.5-flash-lite
-
-# Run with any free-text investment theme
-python investment_advisory.py --topic "AI and robotics"
-python investment_advisory.py --topic "clean energy transition"
-python investment_advisory.py --topic "US regional banking"
-python investment_advisory.py --topic "luxury consumer brands"
-# Default (no flag): "large-cap technology companies"
-```
-
----
-
-## Custom Tools
-
-### `compute_technical_signals(ticker)` — Technical Analyst
-pandas + yfinance computation (no LLM inference required):
-- 50-day / 200-day SMA, golden/death cross detection
-- RSI (14-period, Wilder EWM smoothing)
-- 6-month trend (slope of 20-day MA)
-- 20-day rate-of-change momentum
-- 52-week and 20-day support/resistance
-- Composite technical score 1–5
-
-### `get_free_cash_flow(ticker)` — Fundamental Analyst
-yfinance cashflow statement → OCF, CapEx, FCF for last 4 fiscal years.
-Fills the gap left by YFinanceTools (no cash flow statement endpoint).
-
----
-
-## Company Discovery
-
-`_SECTOR_TICKERS` — hardcoded dict of 12 large-cap S&P 500 representatives per sector.
-`fetch_companies_for_sectors(sectors)` — distributes 10 slots evenly across matched sectors.
-
-**Why hardcoded:** FMP `/v3/stock-screener` and constituent list endpoints both return 403
-on the free API plan. No external API call needed; always works reliably.
-
-### FMP Sector Names (used by LLM prompt + _SECTOR_TICKERS keys)
-`Technology` · `Healthcare` · `Energy` · `Financials` · `Consumer Cyclical` ·
-`Consumer Defensive` · `Industrials` · `Basic Materials` · `Real Estate` ·
-`Utilities` · `Communication Services`
-
-Note: FMP uses `Consumer Cyclical` (not GICS "Consumer Discretionary"),
-`Consumer Defensive` (not "Consumer Staples"), `Basic Materials` (not "Materials").
-
----
-
-## Ranking Step
-
-1. Regex-extracts `Fundamental Score: X/5` and `Technical Score: X/5` per ticker from agent output.
-2. Composite = average of available scores.
-3. If >50% of composites are missing → LLM fallback ranks all tickers by name.
-4. Top 3 by composite score are passed to the Investment Memo step.
-
-`_filter_content_to_tickers(content, tickers)` — trims 10-company analysis to top-3 only
-before sending to Portfolio Strategist (keeps prompt size lean).
-
----
-
-## Agno Workflow API — Key Learnings
-
-### What works
-- `Workflow(steps=[...])` — pass a **plain list**, not a `Steps(...)` wrapper (`Steps` is not iterable)
-- `Parallel(Step(...), Step(...), name="...")` — steps are positional `*args`, not a `steps=` kwarg
-- `Step(executor=fn)` where `fn(step_input: StepInput) -> StepOutput` — custom Python logic as a step
-- `step_input.get_step_content("Step Name")` — retrieves output from a named previous step
-- `step_input.get_step_content("Parallel Analysis")` returns a `dict` keyed by sub-step name
-- `workflow.run(input=..., additional_data={"key": "val"})` — pass runtime data here, **not** on `Workflow()`
-- `StepOutput(step_name=..., content=..., success=True)` — return value from executor functions
-- `Agent(model=llm(), tools=[...])` — standard agent; `show_tool_calls` and `stream` are not valid kwargs
-
-### What does NOT work
-- `Workflow(additional_data=...)` — `additional_data` is a `run()` parameter, not a constructor parameter
-- `Parallel(steps=[...])` — keyword arg `steps` is invalid; use positional args
-- `Steps(Step(...), Step(...))` — `Steps` object is not iterable and cannot be passed as `workflow.steps`
-- `Agent(show_tool_calls=True)` — not a valid `Agent.__init__` parameter in this version
-- Module-level agent creation with `model=llm()` — `llm()` reads env vars at call time, so agents must
-  be created inside a function (e.g. `build_workflow()`) called after `load_dotenv()`
-
-### Env var loading pitfall
-Module-level `OPENROUTER_API_KEY = os.environ.get(...)` is evaluated at import time, before `.env` is
-loaded in some execution contexts. Always read env vars **lazily** (inside functions), and call
-`load_dotenv()` at the top of the file before any imports that consume those vars.
-
-### Step content chaining
-`additional_data` is read-only and identical across all steps (set at `workflow.run()` time).
-To pass data derived during the workflow (e.g. discovered tickers), write JSON to `StepOutput.content`
-and read it in later steps via `step_input.get_step_content("Step Name")`.
-
----
-
-## Bugs Fixed
-
-1. **Silent sector fallback** — `DEFAULT_TICKERS.get(sector, DEFAULT_TICKERS["technology"])` silently
-   used AAPL/MSFT/NVDA for any unknown sector key.
-   Fixed by replacing with explicit error + all hyphenated sector keys.
-
-2. **Module-level `llm()` call** — agents were created at import time, capturing an empty API key.
-   Fixed by moving agent creation inside `build_workflow()`.
-
-3. **`Parallel(steps=[...])`** — wrong kwarg; Agno uses `*args`. Fixed to positional syntax.
-
-4. **`Workflow(additional_data=...)`** — not a constructor param. Moved to `workflow.run(...)`.
-
-5. **FMP 403 on free plan** — `/v3/stock-screener` and constituent list endpoints require a paid FMP
-   plan. Replaced with `_SECTOR_TICKERS` hardcoded fallback (no API call required).
+## Analysis Specs
+* **RSI**: 14-period Wilder EWM. **FCF**: OCF − CapEx, last 4 fiscal years via `yfinance`.
+* Final Memo calls `_filter_content_to_tickers(content, top3)` to trim context to top-3 only.

@@ -14,4 +14,5 @@ def llm() -> OpenAIChat:
         id=model,
         api_key=api_key,
         base_url="https://openrouter.ai/api/v1",
+        max_tokens=8000,
     )

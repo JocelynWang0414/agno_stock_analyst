@@ -7,19 +7,24 @@ from agno.workflow import Parallel, Step, Workflow
 from core.tracer import WorkflowTracer
 from workflow.agents import (
     make_fundamental_analyst,
+    make_macro_analyst,
     make_portfolio_strategist,
     make_technical_analyst,
 )
 from workflow.steps import (
     make_company_discovery_step,
     make_coordinator_step,
+    make_fundamental_analyst_step,
+    make_macro_step,
     make_ranking_step,
     make_synthesis_step,
+    make_technical_analyst_step,
     make_topic_mapper_step,
 )
 
 
 def build_workflow(tracer: WorkflowTracer) -> Workflow:
+    macro_analyst        = make_macro_analyst(tracer)
     fundamental_analyst  = make_fundamental_analyst(tracer)
     technical_analyst    = make_technical_analyst(tracer)
     portfolio_strategist = make_portfolio_strategist(tracer)
@@ -47,15 +52,20 @@ def build_workflow(tracer: WorkflowTracer) -> Workflow:
                 executor=make_coordinator_step(tracer),
                 description="Build research brief for all discovered tickers.",
             ),
+            Step(
+                name="Macro Analysis",
+                executor=make_macro_step(macro_analyst, tracer),
+                description="Top-down macro regime analysis via FRED economic data.",
+            ),
             Parallel(
                 Step(
                     name="Fundamental Analyst",
-                    agent=fundamental_analyst,
+                    executor=make_fundamental_analyst_step(fundamental_analyst, tracer),
                     description="Run fundamental analysis on all tickers.",
                 ),
                 Step(
                     name="Technical Analyst",
-                    agent=technical_analyst,
+                    executor=make_technical_analyst_step(technical_analyst, tracer),
                     description="Run technical analysis on all tickers.",
                 ),
                 name="Parallel Analysis",

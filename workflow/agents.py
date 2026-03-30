@@ -1,5 +1,5 @@
 """
-Agent definitions — Fundamental Analyst, Technical Analyst, Portfolio Strategist.
+Agent definitions — Macro Analyst, Fundamental Analyst, Technical Analyst, Portfolio Strategist.
 """
 
 from textwrap import dedent
@@ -11,6 +11,44 @@ from config import llm
 from core.tracer import WorkflowTracer
 from tools.fundamental import get_free_cash_flow
 from tools.technical import compute_technical_signals
+
+
+def make_macro_analyst(tracer: WorkflowTracer) -> Agent:
+    return tracer.wrap_agent(Agent(
+        name="Macro Analyst",
+        model=llm(),
+        description="You are a Macroeconomic Analyst specialising in top-down market strategy.",
+        instructions=dedent("""\
+            You are given pre-fetched FRED economic data, an investment theme, target sectors,
+            and a list of tickers. Analyze the data and produce the following:
+
+            1. Cycle Identification: Based on the FRED data, classify the current phase:
+               Expansion / Peak / Contraction / Recovery. Provide a 1-sentence rationale.
+
+            2. Sector Sensitivity: Explain how the current rate and inflation environment
+               specifically affects the TARGET SECTORS. Be concrete.
+
+            3. Macro Headwinds/Tailwinds: Identify at least 2 macro factors acting as
+               catalyst or barrier for the tickers over the next 6–12 months.
+
+            4. Macro Regime Score: Assign 1–10 (10 = perfectly bullish for the target sectors).
+               Justify in one paragraph.
+
+            Output Format (use exactly these headers):
+            ## Macro Analysis
+            **Macro Regime Score: X/10**
+            **Cycle Phase:** ...
+            **Rate Environment:** ...
+            **Inflation Outlook:** ...
+            **Sector Impact — [Sector Names]:** ...
+            **Headwinds:**
+            - ...
+            **Tailwinds:**
+            - ...
+            **Summary:** (2-3 sentences on how the macro backdrop shifts risk-reward)
+        """),
+        markdown=True,
+    ))
 
 
 def make_fundamental_analyst(tracer: WorkflowTracer) -> Agent:
@@ -97,18 +135,22 @@ def make_portfolio_strategist(tracer: WorkflowTracer) -> Agent:
         model=llm(),
         description="You are a senior portfolio strategist who synthesises research into investment memos.",
         instructions=dedent("""\
-            You receive fundamental and technical analysis for three companies in the same sector.
-            Produce a professional **Investment Recommendation Memo** with these sections:
+            You receive a macroeconomic context report, fundamental analysis, and technical
+            analysis for three companies. Produce a professional **Investment Recommendation Memo**:
 
-            1. **Executive Summary** (3-4 sentences): sector outlook and top takeaway.
-            2. **Company Scorecard** — markdown table:
+            1. **Executive Summary** (3-4 sentences): reference the Macro Regime Score and cycle
+               phase from the macro report, then state the sector outlook and top takeaway.
+            2. **Macro Backdrop** (2-3 sentences): summarise the key macro headwinds/tailwinds
+               from the macro report and how they frame the recommendations.
+            3. **Company Scorecard** — markdown table:
                 | Ticker | Fund. Score | Tech. Score | Composite | Recommendation |
                 (Composite = average; Recommendation: Strong Buy / Buy / Hold / Sell / Strong Sell)
-            3. **Ranked Recommendations** (Rank 1 = best opportunity):
+            4. **Ranked Recommendations** (Rank 1 = best opportunity):
                 For each rank: ticker, composite score, 3-5 bullet rationale.
-            4. **Key Risks to the Thesis** — sector-level AND stock-specific.
-            5. **Suggested Position Sizing**: overweight / market-weight / underweight with reasoning.
-            6. **Disclaimer**: standard investment disclaimer.
+            5. **Key Risks to the Thesis** — macro-level, sector-level, AND stock-specific.
+            6. **Suggested Position Sizing**: overweight / market-weight / underweight with reasoning,
+               adjusted for the macro regime (e.g. reduce size if macro score < 5).
+            7. **Disclaimer**: standard investment disclaimer.
 
             Use markdown. Be concise and data-driven.
         """),

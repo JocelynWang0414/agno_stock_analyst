@@ -78,7 +78,7 @@ def _llm_rank_fallback(
     )
     try:
         response = ranker.run(prompt)
-        content  = response.content if response else ""
+        content  = (response.content if response and response.content else None) or ""
         match    = re.search(r'\{[^{}]*"ranked"\s*:\s*\[[^\]]*\][^{}]*\}', content, re.DOTALL)
         if match:
             ranked_list = json.loads(match.group()).get("ranked", [])
